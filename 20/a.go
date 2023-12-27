@@ -19,6 +19,9 @@ const (
 	RX
 )
 
+var pulseStrMap = map[bool]string{true: "-high-", false: "-low-"}
+var typeStrMap = map[ModuleType]string{Broadcast: "BR", Conjunction: "CJ", FlipFlop: "FF", RX: "RX"}
+
 type Module struct {
 	Station               string
 	Type                  ModuleType
@@ -32,7 +35,7 @@ type Module struct {
 type Pulse struct {
 	High bool
 	From string
-	To   string
+	To   []string
 }
 
 type BroadCastSystem struct {
@@ -44,55 +47,44 @@ type BroadCastSystem struct {
 }
 
 func (m *BroadCastSystem) AddModule(module *Module) {
-	m.modules[module.Station] = module
-}
-
-func (m *BroadCastSystem) queuePulse(pulse Pulse) {
-	pulseStrMap := map[bool]string{true: "-high-", false: "-low-"}
-	typeStrMap := map[ModuleType]string{Broadcast: "BR", Conjunction: "CJ", FlipFlop: "FF", RX: "RX"}
-	if pulse.High {
-		m.numHighPulsesSent++
-	} else {
-		m.numLowPulsesSent++
-	}
-	moduleTypeDest := "VOID"
-	if _, ok := m.modules[pulse.To]; ok {
-		moduleTypeDest = typeStrMap[m.modules[pulse.To].Type]
-	}
-
-	moduleTypeSrc := "VOID"
-	if _, ok := m.modules[pulse.From]; ok {
-		moduleTypeSrc = typeStrMap[m.modules[pulse.From].Type]
-	}
-	if debug {
-		fmt.Printf("%s [%s] from %s> %s [%s]\n", pulse.From, moduleTypeSrc, pulseStrMap[pulse.High], pulse.To, moduleTypeDest)
-	}
-	if _, ok := m.modules[pulse.To]; ok {
-		m.queue = append(m.queue, pulse)
+	m.modules[module.Station] = &Module{
+		Station:      module.Station,
+		Type:         module.Type,
+		Destinations: module.Destinations,
 	}
 }
 
-func (m *BroadCastSystem) PressButton() {
-	if debug {
-		fmt.Printf("=> pressed button\n")
-	}
+func (m *BroadCastSystem) ProcessButtonPress() {
 	m.numButtonPresses++
-	m.queuePulse(Pulse{false, "button", "broadcaster"})
-}
+	current := []*Pulse{{false, "button", []string{"broadcaster"}}}
+	for len(current) > 0 {
+		next := []*Pulse{}
+		numPulses := 0
+		for _, pulse := range current {
+			if pulse.High {
+				m.numHighPulsesSent++
+			} else {
+				m.numLowPulsesSent++
+			}
 
-func (m *BroadCastSystem) Process() {
-	for len(m.queue) > 0 {
-		queue := m.queue
-		m.queue = []Pulse{}
-
-		for _, pulse := range queue {
-			m.modules[pulse.To].Process(pulse, m.queuePulse)
+			for _, to := range pulse.To {
+				output := m.modules[to].Process(pulse)
+				if output != nil {
+					next = append(next, output)
+					numPulses += len(output.To)
+				}
+			}
 		}
+		current = next
 
 		if debug {
 			fmt.Printf("----------------------------\n")
 		}
 	}
+}
+
+func (m *BroadCastSystem) FindCycle(outputModule string, output bool) int {
+	//TODO: how do we detect a cycle
 }
 
 func (m *BroadCastSystem) Reset() {
@@ -151,7 +143,7 @@ func newBroadcastSystem() *BroadCastSystem {
 	}
 }
 
-func (m *Module) Process(pulse Pulse, queue func(Pulse)) {
+func (m *Module) Process(pulse *Pulse) *Pulse {
 	output := false
 	if pulse.High {
 		m.numHighPulsesReceived++
@@ -164,13 +156,23 @@ func (m *Module) Process(pulse Pulse, queue func(Pulse)) {
 		output = pulse.High
 	case Conjunction:
 		m.State[pulse.From] = pulse.High
-		for _, source := range m.Sources {
-			val, ok := m.State[source]
-			if !ok || !val {
-				output = true
-				break
+		if m.State["&&"] {
+			m.State["&&"] = pulse.High
+			output = !m.State["&&"]
+		} else if !pulse.High {
+			output = true
+			m.State["&&"] = false
+		} else {
+			for _, source := range m.Sources {
+				val, ok := m.State[source]
+				if !ok || !val {
+					output = true
+					break
+				}
 			}
+			m.State["&&"] = !output
 		}
+
 	case FlipFlop:
 		triggered := !pulse.High
 		m.State["triggered"] = triggered
@@ -178,15 +180,13 @@ func (m *Module) Process(pulse Pulse, queue func(Pulse)) {
 			m.State["ff"] = !m.State["ff"]
 			output = m.State["ff"]
 		} else {
-			return
+			return nil
 		}
 	case RX:
-		return
+		return nil
 	}
 
-	for _, dest := range m.Destinations {
-		queue(Pulse{output, m.Station, dest})
-	}
+	return &Pulse{output, m.Station, m.Destinations}
 }
 
 func main() {
@@ -223,8 +223,8 @@ func main() {
 	//	broadCastSystem.Process()
 	//}
 
-	counterHigh, counterLow := broadCastSystem.Stats()
-	fmt.Printf("Delivered %d high pulses and %d low pulses => %d\n", counterHigh, counterLow, counterHigh*counterLow)
+	//counterHigh, counterLow := broadCastSystem.Stats()
+	//fmt.Printf("Delivered %d high pulses and %d low pulses => %d\n", counterHigh, counterLow, counterHigh*counterLow)
 
 	rxModule := &Module{
 		Station:      "rx",
@@ -235,25 +235,27 @@ func main() {
 	broadCastSystem.AddModule(rxModule)
 	broadCastSystem.Reset()
 
-	//TODO: rewrite using matrix multiplication / truth table lookup??
-
-	sources := broadCastSystem.GetAllSources("rx")
-	for _, source := range sources {
-		fmt.Printf("%+v\n", source)
-	}
-	fmt.Printf("Num stations: %d used %d\n", len(broadCastSystem.modules), len(sources))
-	panic("stop")
-
-	for rxModule.numLowPulsesReceived != 1 {
-		rxModule.numLowPulsesReceived = 0
-		rxModule.numHighPulsesReceived = 0
-		broadCastSystem.PressButton()
-		broadCastSystem.Process()
-
-		if broadCastSystem.numButtonPresses%100_000 == 0 {
-			fmt.Printf("[%d] not yet ..\n", broadCastSystem.numButtonPresses)
+	numPushes := 1
+	for _, sub := range broadCastSystem.modules["bq"].Sources {
+		sources := broadCastSystem.GetAllSources(sub)
+		subSystem := newBroadcastSystem()
+		for _, source := range sources {
+			subSystem.AddModule(source)
 		}
+		subSystem.Reset()
+		numPushes *= subSystem.FindCycle(sub, true)
 	}
+	fmt.Printf("It should take %d button presses to turn on\n", numPushes)
 
-	fmt.Printf("It took %d button presses to turn on\n", broadCastSystem.numButtonPresses)
+	//for rxModule.numLowPulsesReceived != 1 {
+	//	rxModule.numLowPulsesReceived = 0
+	//	rxModule.numHighPulsesReceived = 0
+	//	broadCastSystem.ProcessButtonPress()
+	//
+	//	if broadCastSystem.numButtonPresses%100_000 == 0 {
+	//		fmt.Printf("[%d] not yet ..\n", broadCastSystem.numButtonPresses)
+	//	}
+	//}
+	//
+	//fmt.Printf("It took %d button presses to turn on\n", broadCastSystem.numButtonPresses)
 }
