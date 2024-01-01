@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -25,10 +26,10 @@ type Move struct {
 type Direction string
 
 const (
-	U Direction = "U"
-	R           = "R"
-	D           = "D"
-	L           = "L"
+	U Direction = "3"
+	R           = "0"
+	D           = "1"
+	L           = "2"
 )
 
 var movement = map[Direction]Move{
@@ -81,6 +82,18 @@ func floodFill(startY int, startX int, color int, grid map[int]map[int]int, maxY
 	return grid
 }
 
+func compactAxis(items []int) ([]int, map[int]int) {
+	slices.Sort(items)
+	items = slices.Compact(items)
+
+	m := map[int]int{}
+	for index, x := range items {
+		m[x] = index
+	}
+
+	return items, m
+}
+
 func main() {
 	file, err := os.Open("input.txt")
 	if err != nil {
@@ -94,26 +107,22 @@ func main() {
 	minX := points[0].X
 	minY := points[0].Y
 	length := 0
-	prevDirection := Direction('0')
 	for scanner.Scan() {
 		line := strings.Split(scanner.Text(), " ")
-		direction, numStr, colorStr := Direction(line[0][0]), line[1], strings.Trim(line[2], "()#")
-		color, _ := strconv.ParseInt(colorStr[:5], 16, 64)
-		if direction == prevDirection || prevDirection == opposite[direction] {
-			panic("Not simple!")
-		}
-		num, _ := strconv.ParseInt(numStr, 10, 64)
+		colorStr := strings.Trim(line[2], "()#")
+		num, _ := strconv.ParseInt(colorStr[:5], 16, 64)
+		direction := Direction(colorStr[5])
+
 		length += int(num)
 		current := &Point{prev.X + (int(num) * movement[direction].X), prev.Y + (int(num) * movement[direction].Y), U, 0, 0}
 		prev.Num = int(num)
 		prev.Direction = direction
-		prev.Color = int(color)
+		prev.Color = 255
 
 		minX = min(minX, current.X)
 		minY = min(minY, current.Y)
 		points = append(points, current)
 		prev = current
-		prevDirection = direction
 	}
 
 	//points = append(points, points[1])
@@ -122,47 +131,68 @@ func main() {
 
 	minX -= 1
 	minY -= 1
-	maxX := 0
-	maxY := 0
+	xItems := []int{0}
+	yItems := []int{0}
 	for i, _ := range points {
 		points[i].X -= minX
 		points[i].Y -= minY
-		maxX = max(maxX, points[i].X)
-		maxY = max(maxY, points[i].Y)
+		xItems = append(xItems, points[i].X)
+		xItems = append(xItems, points[i].X-1)
+		xItems = append(xItems, points[i].X+1)
+		yItems = append(yItems, points[i].Y)
+		yItems = append(yItems, points[i].Y-1)
+		yItems = append(yItems, points[i].Y+1)
 		fmt.Printf("%+v\n", points[i])
 	}
-	maxX++
-	maxY++
+
+	xItems, xMap := compactAxis(xItems)
+	yItems, yMap := compactAxis(yItems)
+
+	maxY := len(yItems)
+	maxX := len(xItems)
 
 	//
 	//fmt.Printf("%+v\n", points)
 
 	grid := map[int]map[int]int{}
-	for i := 0; i <= maxY; i++ {
+	for i := 0; i <= maxY+1; i++ {
 		grid[i] = map[int]int{}
 	}
 
 	for _, point := range points {
-		grid[point.Y][point.X] = point.Color
+		grid[yMap[point.Y]][xMap[point.X]] = point.Color
 		for i := 1; i < point.Num; i++ {
-			grid[point.Y+i*movement[point.Direction].Y][point.X+i*movement[point.Direction].X] = point.Color
+			newY := point.Y + i*movement[point.Direction].Y
+			newX := point.X + i*movement[point.Direction].X
+			if _, yOk := yMap[newY]; !yOk {
+				continue
+			}
+			if _, xOk := xMap[newX]; !xOk {
+				continue
+			}
+			grid[yMap[newY]][xMap[newX]] = point.Color
 		}
 	}
 
-	grid = floodFill(0, 0, 1, grid, maxY, maxX)
+	grid = floodFill(0, 0, 1, grid, maxY+1, maxX+1)
 
+	fmt.Printf("%d %d %d %d\n", len(yItems), len(xItems), maxY, maxX)
 	numInside := 0
-	for y := 0; y <= maxY; y++ {
+	for y := 0; y < maxY; y++ {
 		line := ""
-		for x := 0; x <= maxX; x++ {
+		lineInside := 0
+		for x := 0; x < maxX; x++ {
 			if _, ok := grid[y][x]; ok {
 				line += "#"
 			} else {
 				line += " "
-				numInside++
+				lineInside += xItems[x+1] - xItems[x]
 			}
+		}
+		if lineInside > 0 {
+			numInside += (yItems[y+1] - yItems[y]) * lineInside
 		}
 		fmt.Println(line)
 	}
-	fmt.Printf("Inside: %d trench: %d lave: %d\n", numInside, length, numInside+length)
+	fmt.Printf("Inside: %d trench: %d lava: %d\n", numInside, length, numInside+length)
 }
